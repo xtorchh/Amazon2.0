@@ -11,6 +11,39 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 if not DISCORD_WEBHOOK_URL:
     print("Warning: DISCORD_WEBHOOK_URL environment variable not set. Deals will not be sent to Discord.")
 
+# Define the path for the file that stores sent deals.
+# This path should ideally be within a persistent volume on Railway.
+SENT_DEALS_FILE = "/app/data/sent_deals.json"
+
+# --- Helper functions for managing sent deals ---
+def load_sent_deals(file_path):
+    """Loads previously sent deal links from a JSON file."""
+    if not os.path.exists(file_path):
+        print(f"No existing sent deals file found at {file_path}. Starting fresh.")
+        return set() # Use a set for efficient lookup
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            # Load as list, convert to set for lookup efficiency
+            sent_deals = set(json.load(f))
+            print(f"Loaded {len(sent_deals)} previously sent deals.")
+            return sent_deals
+    except (json.JSONDecodeError, FileNotFoundError, IOError) as e:
+        print(f"Error loading sent deals from {file_path}: {e}. Starting fresh.")
+        return set()
+
+def save_sent_deals(file_path, sent_deals):
+    """Saves the current list of sent deal links to a JSON file."""
+    # Ensure the directory exists
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    try:
+        with open(file_path, 'w', encoding='utf-8') as f:
+            # Convert set back to list for JSON serialization
+            json.dump(list(sent_deals), f, indent=4)
+            print(f"Saved {len(sent_deals)} sent deals to {file_path}.")
+    except IOError as e:
+        print(f"Error saving sent deals to {file_path}: {e}")
+
 # --- Helper function to send to Discord ---
 def send_to_discord(deal_info, source_name="Deal Bot"):
     """Sends deal information to a Discord webhook, with rate limit handling."""
@@ -44,23 +77,20 @@ def send_to_discord(deal_info, source_name="Deal Bot"):
     try:
         response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
         
-        # --- Handle Discord Rate Limits ---
         if response.status_code == 429:
             retry_after = int(response.headers.get("Retry-After", 1)) / 1000 # Retry-After is in milliseconds
             print(f"Discord rate limited. Retrying after {retry_after:.2f} seconds...")
-            time.sleep(retry_after + 0.1) # Add a small buffer
-            response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10) # Retry the request
-        # --- End Rate Limit Handling ---
+            time.sleep(retry_after + 0.1) 
+            response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10) 
 
-        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+        response.raise_for_status()
         print(f"Successfully sent deal to Discord: {deal_info['title']} (Source: {source_name})")
     except requests.exceptions.RequestException as e:
         print(f"Error sending to Discord webhook from {source_name}: {e}")
     
-    # --- Add a small general delay after each send ---
-    time.sleep(1) # Wait 1 second between each Discord message to avoid hitting limits again
+    time.sleep(1)
 
-# --- Helper function to try multiple selectors (no change) ---
+# --- Helper function to try multiple selectors ---
 def find_element_with_multiple_selectors(soup_or_element, selector_list):
     """
     Tries to find an element using a list of CSS selectors.
@@ -89,10 +119,12 @@ def scrape_hotukdeals(max_pages=1):
     """Scrapes hotukdeals.com for popular deals using basic Playwright with backup selectors and scrolling."""
     base_url = "https://www.hotukdeals.com/"
     
-    deals_found = []
+    new_deals_sent = []
     
+    # --- Deduplication: Load previously sent deals ---
+    sent_deal_links = load_sent_deals(SENT_DEALS_FILE)
+
     # --- Define lists of potential selectors ---
-    # These are speculative and need live inspection for verification
     MAIN_DEAL_CONTAINER_SELECTORS = [
         'article.thread--card',                  # Original
         'div.thread--card',                      # Common: div instead of article
@@ -151,8 +183,7 @@ def scrape_hotukdeals(max_pages=1):
         page_num = 1
         current_url = base_url
 
-        # Configure how many times to scroll down for more content
-        SCROLL_ATTEMPTS_PER_PAGE = 3 # Scroll down 3 times to load more deals if they are lazy-loaded
+        SCROLL_ATTEMPTS_PER_PAGE = 3 
         
         while page_num <= max_pages: 
             print(f"Scraping HotUKDeals page {page_num} from {current_url} using Playwright (Basic with backup selectors and scrolling)...")
@@ -168,19 +199,15 @@ def scrape_hotukdeals(max_pages=1):
                     print(f"HotUKDeals: Current HTML content (first 1000 chars):\n{page.content()[:1000]}...")
                     break 
 
-                # --- NEW: Scroll down to load more content dynamically ---
+                # --- Scrolling Logic ---
                 print(f"HotUKDeals: Attempting to scroll down {SCROLL_ATTEMPTS_PER_PAGE} times to load more deals.")
                 for i in range(SCROLL_ATTEMPTS_PER_PAGE):
                     print(f"  Scrolling attempt {i+1} of {SCROLL_ATTEMPTS_PER_PAGE}...")
-                    # Scroll to the bottom of the page
                     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    # Give the page a moment to load new content after scrolling
                     time.sleep(random.uniform(2, 4))
-                    # Optionally, wait for network activity to settle after scroll.
-                    # This can be important for pages that load content via AJAX after scrolling.
                     page.wait_for_load_state('networkidle', timeout=10000) 
                 print("HotUKDeals: Finished scrolling attempts.")
-                # --- END NEW SCROLLING LOGIC ---
+                # --- End Scrolling Logic ---
 
                 html_content = page.content()
                 soup = BeautifulSoup(html_content, 'lxml')
@@ -216,12 +243,18 @@ def scrape_hotukdeals(max_pages=1):
                             "metric_info": f"🔥 {heat} Heat",
                             "discount_info": discount_info
                         }
-                        deals_found.append(deal_item)
-                        send_to_discord(deal_item, source_name="HotUKDeals")
+                        
+                        # --- Deduplication: Check if deal has already been sent ---
+                        if deal_item['link'] not in sent_deal_links:
+                            send_to_discord(deal_item, source_name="HotUKDeals")
+                            sent_deal_links.add(deal_item['link']) # Add to set of sent deals
+                            new_deals_sent.append(deal_item) # Keep track of new deals for logging
+                        else:
+                            print(f"Skipped already sent deal: {deal_item['title']}")
                     else:
                         print(f"HotUKDeals: Skipped incomplete deal (potential selector issue). Title: '{title}', Link: '{link}', Price: '{price}'")
 
-                # --- HOTUKDEALS PAGINATION WITH PLAYWRIGHT (Remains after scrolling attempts) ---
+                # --- Pagination Logic ---
                 next_button_selector = 'li.pagination-next a'
                 load_more_selector = 'a.cept-load-more'
 
@@ -252,16 +285,21 @@ def scrape_hotukdeals(max_pages=1):
                 break
         
         browser.close()
-    return deals_found
+    
+    # --- Deduplication: Save updated list of sent deals ---
+    save_sent_deals(SENT_DEALS_FILE, sent_deal_links)
+
+    return new_deals_sent # Return only newly sent deals for clearer count
 
 if __name__ == "__main__":
-    print("Starting deal scraping from HotUKDeals using Playwright (Basic with backup selectors and scrolling).")
+    print("Starting deal scraping from HotUKDeals...")
     
     print("\n--- Scraping HotUKDeals ---")
-    hukd_deals = scrape_hotukdeals(max_pages=1) 
+    newly_sent_deals = scrape_hotukdeals(max_pages=1) 
 
-    total_deals_found = len(hukd_deals)
-    if total_deals_found == 0:
-        print("No new deals found from HotUKDeals in this run.")
+    total_new_deals_sent = len(newly_sent_deals)
+    if total_new_deals_sent == 0:
+        print("No new deals found and sent to Discord in this run.")
     else:
-        print(f"\nScraping complete. Found and attempted to send {len(hukd_deals)} deals from HotUKDeals.")
+        print(f"\nScraping complete. Found and sent {total_new_deals_sent} NEW deals from HotUKDeals.")
+
