@@ -38,7 +38,8 @@ def send_to_discord(deal_info, source_name="Deal Bot"):
 
     payload = {
         "username": f"{source_name} Deal Bot",
-        "avatar_url": "https://i.imgur.com/example.png" if source_name == "HotUKDeals" else "https://i.imgur.com/example2.png", # Placeholder, replace with actual favicons or logos
+        # Replace these with actual favicons if you want them to show up
+        "avatar_url": "https://www.hotukdeals.com/favicon.ico" if source_name == "HotUKDeals" else "https://www.latestdeals.co.uk/favicon.ico",
         "embeds": [embed]
     }
 
@@ -53,7 +54,6 @@ def send_to_discord(deal_info, source_name="Deal Bot"):
 def scrape_hotukdeals(max_pages=1):
     """Scrapes hotukdeals.com for popular deals."""
     base_url = "https://www.hotukdeals.com/"
-    # For hot deals, homepage is sufficient for first page. Pagination is different.
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -67,42 +67,40 @@ def scrape_hotukdeals(max_pages=1):
     page_num = 1
     current_url = base_url
 
-    while page_num <= max_pages: # Limiting pages for HotUKDeals as pagination is complex
+    while page_num <= max_pages: 
         print(f"Scraping HotUKDeals page {page_num} from {current_url}...")
         try:
             response = requests.get(current_url, headers=headers, timeout=15)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'lxml')
 
-            # --- HotUKDeals Specific Selectors (verify these!) ---
-            # Main deal container
-            products = soup.find_all('div', {'data-deal-id': True, 'data-card-type': 'deal'})
+            # --- HotUKDeals Specific Selectors (UPDATED - Verify these if issues persist!) ---
+            # Main deal container - Look for an <article> tag with class 'thread--card'
+            products = soup.find_all('article', class_='thread--card')
             
             if not products:
-                print("No more products found on HotUKDeals page or end of results.")
+                print("HotUKDeals: No products found with current selector. HTML structure may have changed.")
                 break
 
             for product in products:
-                title_tag = product.find('a', class_='cept-deal-title')
-                title = title_tag.text.strip() if title_tag else "N/A"
-
-                link = title_tag['href'] if title_tag and 'href' in title_tag.attrs else "N/A"
-                if link and not link.startswith("http"): # Ensure full URL for relative links
-                    link = "https://www.hotukdeals.com" + link
-
+                # Title & Link: Usually within h2.thread-title > a.cept-deal-title
+                title_link_tag = product.find('h2', class_='thread-title').find('a', class_='cept-deal-title')
+                title = title_link_tag.text.strip() if title_link_tag else "N/A"
+                link = title_link_tag['href'] if title_link_tag and 'href' in title_link_tag.attrs else "N/A"
+                
+                # Price
                 price_tag = product.find('span', class_='thread-price')
                 price = price_tag.text.strip() if price_tag else "N/A"
 
-                heat_tag = product.find('span', class_='cept-vote-temp')
+                # Heat Score
+                heat_tag = product.find('span', class_='cept-vote-temp') # Example: span.cept-vote-temp or span.vote-box__score
                 heat = heat_tag.text.strip() if heat_tag else "N/A"
 
-                image_tag = product.find('img', class_='cept-img-loaded')
+                # Image
+                image_tag = product.find('img', class_='thread-image') # Example: img.thread-image
                 image_url = image_tag['src'] if image_tag and 'src' in image_tag.attrs else ""
 
-                # HotUKDeals doesn't have a direct 'percentage off' element,
-                # but it might be in the title or description (which we're not scraping fully here).
-                # We'll just indicate it's from HotUKDeals for now.
-                discount_info = "Check deal page for discount details"
+                discount_info = "N/A" # HotUKDeals doesn't have a standard discount percentage element
 
                 if title != "N/A" and link != "N/A" and price != "N/A":
                     deal_item = {
@@ -111,24 +109,25 @@ def scrape_hotukdeals(max_pages=1):
                         "link": link,
                         "image_url": image_url,
                         "metric_info": f"🔥 {heat} Heat",
-                        "discount_info": discount_info # Placeholder
+                        "discount_info": discount_info
                     }
                     deals_found.append(deal_item)
                     send_to_discord(deal_item, source_name="HotUKDeals")
 
-            # HotUKDeals pagination is usually done via "load more" button or different page numbering.
-            # For simplicity, we'll limit to max_pages (default 1) for the main page.
-            # Implementing robust pagination for HUKD requires deeper inspection of their JS.
-            if page_num < max_pages: # Only try to go to next if max_pages > 1
-                 next_page_link = soup.find('a', class_='pagination-next') # Check this if you want more pages
-                 if next_page_link and 'href' in next_page_link.attrs:
-                     current_url = "https://www.hotukdeals.com" + next_page_link['href']
-                     page_num += 1
-                 else:
-                     print("HotUKDeals: No more pages or pagination button not found.")
-                     break
+            # HotUKDeals pagination (UPDATED - still challenging, often JS loaded)
+            # This looks for a simple 'next page' link, might not always work for deep pagination.
+            next_page_link_container = soup.find('li', class_='pagination-next')
+            if next_page_link_container:
+                next_page_a_tag = next_page_link_container.find('a')
+                if next_page_a_tag and 'href' in next_page_a_tag.attrs:
+                    current_url = next_page_a_tag['href']
+                    page_num += 1
+                else:
+                    print("HotUKDeals: Next page link found, but href attribute missing.")
+                    break
             else:
-                break # Reached max_pages limit
+                print("HotUKDeals: No more pages or pagination button not found.")
+                break
 
             time.sleep(random.uniform(3, 8))
 
@@ -136,7 +135,7 @@ def scrape_hotukdeals(max_pages=1):
             print(f"Error scraping HotUKDeals: {e}")
             break
         except Exception as e:
-            print(f"An unexpected error occurred during parsing HotUKDeals: {e}")
+            print(f"An unexpected error occurred during parsing HotUKDeals: {e}. This might mean a selector is finding an element, but not in the expected structure for subsequent operations.")
             break
     return deals_found
 
@@ -146,7 +145,7 @@ def scrape_latestdeals(max_pages=1):
     base_url = "https://www.latestdeals.co.uk/deals"
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36", # Current User-Agent (July 2025)
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
@@ -164,34 +163,33 @@ def scrape_latestdeals(max_pages=1):
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'lxml')
 
-            # --- LatestDeals Specific Selectors (verify these!) ---
-            # Main deal container
+            # --- LatestDeals Specific Selectors (UPDATED - Verify these if issues persist!) ---
+            # Main deal container - This class still appears correct.
             products = soup.find_all('div', class_='ld-card ld-card--deal')
 
             if not products:
-                print("No more products found on LatestDeals page or end of results.")
+                print("LatestDeals: No products found with current selector. HTML structure may have changed.")
                 break
 
             for product in products:
-                title_tag = product.find('h2', class_='ld-card__title').find('a', class_='ld-card__link')
-                title = title_tag.text.strip() if title_tag else "N/A"
+                # Title & Link: Usually within h2.ld-card__title > a.ld-card__link
+                title_link_tag = product.find('h2', class_='ld-card__title').find('a', class_='ld-card__link')
+                title = title_link_tag.text.strip() if title_link_tag else "N/A"
+                link = title_link_tag['href'] if title_link_tag and 'href' in title_link_tag.attrs else "N/A"
 
-                link = title_tag['href'] if title_tag and 'href' in title_tag.attrs else "N/A"
-                if link and not link.startswith("http"):
-                    link = "https://www.latestdeals.co.uk" + link
-
+                # Price
                 price_tag = product.find('span', class_='ld-card__price')
                 price = price_tag.text.strip() if price_tag else "N/A"
                 
+                # Likes
                 likes_tag = product.find('span', class_='js-likes-count')
                 likes = likes_tag.text.strip() if likes_tag else "0"
 
+                # Image
                 image_tag = product.find('img', class_='ld-card__image')
                 image_url = image_tag['src'] if image_tag and 'src' in image_tag.attrs else ""
 
-                # LatestDeals also doesn't have a direct 'percentage off' element consistently
-                # You might find it in the title or description on their site.
-                discount_info = "Check deal page for discount details"
+                discount_info = "N/A" # LatestDeals doesn't have a standard discount percentage element
                 
                 if title != "N/A" and link != "N/A" and price != "N/A":
                     deal_item = {
@@ -200,23 +198,25 @@ def scrape_latestdeals(max_pages=1):
                         "link": link,
                         "image_url": image_url,
                         "metric_info": f"👍 {likes} Likes",
-                        "discount_info": discount_info # Placeholder
+                        "discount_info": discount_info
                     }
                     deals_found.append(deal_item)
                     send_to_discord(deal_item, source_name="LatestDeals")
 
-            # LatestDeals pagination
-            next_page_link = soup.find('li', class_='pagination__item--next')
-            if next_page_link:
-                next_page_a_tag = next_page_link.find('a', class_='pagination__link')
+            # LatestDeals pagination (UPDATED)
+            # Looks for the li with class 'pagination__item--next' and then the 'a' tag inside it
+            next_page_li = soup.find('li', class_='pagination__item--next')
+            if next_page_li:
+                next_page_a_tag = next_page_li.find('a', class_='pagination__link')
                 if next_page_a_tag and 'href' in next_page_a_tag.attrs:
                     current_url = next_page_a_tag['href'] # LatestDeals uses full URLs for pagination
                     page_num += 1
                 else:
-                    print("LatestDeals: No more pages or pagination button not found.")
+                    print("LatestDeals: Next page link container found, but 'a' tag or href missing.")
                     break
             else:
-                break # Reached max_pages limit
+                print("LatestDeals: No more pages or pagination button not found.")
+                break
 
             time.sleep(random.uniform(3, 8))
 
@@ -224,7 +224,7 @@ def scrape_latestdeals(max_pages=1):
             print(f"Error scraping LatestDeals: {e}")
             break
         except Exception as e:
-            print(f"An unexpected error occurred during parsing LatestDeals: {e}")
+            print(f"An unexpected error occurred during parsing LatestDeals: {e}. This might mean a selector is finding an element, but not in the expected structure for subsequent operations.")
             break
     return deals_found
 
@@ -236,10 +236,10 @@ if __name__ == "__main__":
     # Be mindful of the sites' terms of service and server load.
     
     print("\n--- Scraping HotUKDeals ---")
-    hukd_deals = scrape_hotukdeals(max_pages=2) # Scrape first 2 pages of HUKD
+    hukd_deals = scrape_hotukdeals(max_pages=1) # Start with 1 page to test, increase to 2-3 if working
 
     print("\n--- Scraping LatestDeals ---")
-    ld_deals = scrape_latestdeals(max_pages=2) # Scrape first 2 pages of LatestDeals
+    ld_deals = scrape_latestdeals(max_pages=1) # Start with 1 page to test, increase to 2-3 if working
 
     total_deals_found = len(hukd_deals) + len(ld_deals)
     if total_deals_found == 0:
