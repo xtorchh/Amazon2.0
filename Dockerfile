@@ -1,6 +1,6 @@
-# Use a Python 3.12 slim image based on Debian Bookworm (Debian 12)
-# Slim images are smaller and good for production, while Bookworm is a recent stable Debian.
-FROM python:3.12-slim-bookworm
+# Use a Python 3.11 slim image based on Debian Bookworm (Debian 12)
+# Python 3.11 is very stable and has wide library support.
+FROM python:3.11-slim-bookworm
 
 # Set the working directory in the container
 WORKDIR /app
@@ -56,15 +56,13 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright browser binaries and their additional dependencies.
-# This is the crucial step that was previously done as a build command.
+# This downloads Chromium, Firefox, and WebKit, and their system dependencies.
 RUN playwright install --with-deps
 
 # Copy the rest of your application code into the working directory
-# The '.' at the end means "copy everything from the current directory on the host"
-# to the current WORKDIR (/app) in the container.
 COPY . .
 
 # Command to run the application when the container starts.
-# This will execute your scraper.py script.
 CMD ["python", "scraper.py"]
+
 
