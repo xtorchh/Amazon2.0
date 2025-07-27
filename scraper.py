@@ -4,10 +4,8 @@ import time
 import random
 import os
 import json
-# Import from playwright_extra instead of playwright.sync_api
-from playwright_extra import sync_playwright
-# Import the stealth plugin
-from puppeteer_extra_plugin_stealth import stealth
+# --- CHANGE: Using standard playwright.sync_api ---
+from playwright.sync_api import sync_playwright
 
 # --- Configuration ---
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
@@ -31,11 +29,9 @@ def send_to_discord(deal_info, source_name="Deal Bot"):
         "thumbnail": {"url": deal_info.get("image_url", "")}
     }
     
-    # Add discount if available
     if deal_info.get("discount_info") and deal_info["discount_info"] != "N/A":
         embed["fields"].append({"name": "Discount Info", "value": deal_info["discount_info"], "inline": False})
     
-    # Add Heat/Likes if available
     if deal_info.get("metric_info"):
         embed["fields"].append({"name": "Popularity", "value": deal_info["metric_info"], "inline": True})
 
@@ -53,54 +49,43 @@ def send_to_discord(deal_info, source_name="Deal Bot"):
     except requests.exceptions.RequestException as e:
         print(f"Error sending to Discord webhook from {source_name}: {e}")
 
-# --- Scraper for HotUKDeals.com with Playwright-Extra (Stealth, User Agent, Viewport) ---
+# --- Scraper for HotUKDeals.com with basic Playwright ---
 def scrape_hotukdeals(max_pages=1):
-    """Scrapes hotukdeals.com for popular deals using Playwright with stealth plugin, user agent, and viewport."""
+    """Scrapes hotukdeals.com for popular deals using basic Playwright (no stealth)."""
     base_url = "https://www.hotukdeals.com/"
     
     deals_found = []
     
-    # Apply the stealth plugin to Playwright
-    # This modifies Playwright to evade common bot detections
-    sync_playwright.add_plugin(stealth)
+    # --- CHANGE: Removed sync_playwright.add_plugin(stealth) ---
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         
         # --- Configure Browser Context with User Agent and Viewport ---
-        # Creating a new browser context allows you to set specific options
-        # like user_agent and viewport, which apply to all pages opened within this context.
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080} # Common desktop resolution
+            viewport={"width": 1920, "height": 1080}
         )
-        page = context.new_page() # Use the context to create the page
+        page = context.new_page()
         # --- End Context Configuration ---
         
         page_num = 1
         current_url = base_url
 
         while page_num <= max_pages: 
-            print(f"Scraping HotUKDeals page {page_num} from {current_url} using Playwright (Stealth, UA, Viewport)...")
+            print(f"Scraping HotUKDeals page {page_num} from {current_url} using Playwright (Basic)...")
             try:
-                # Navigate to the page.
-                # Use 'networkidle' to wait for network activity to cease, which might help with JS challenges.
-                # Increased timeout significantly as Cloudflare challenges can take time.
-                page.goto(current_url, wait_until="networkidle", timeout=90000) # Increased timeout to 90 seconds
+                page.goto(current_url, wait_until="networkidle", timeout=90000)
                 
-                # IMPORTANT: After goto, wait for a known element on the *actual* page.
-                # This will give Cloudflare time to resolve if it can.
-                # If this selector is not found within the timeout, it means Cloudflare blocked us.
                 try:
-                    page.wait_for_selector('article.thread--card', timeout=30000) # Wait up to 30s for a deal card
+                    # Continue to wait for actual content
+                    page.wait_for_selector('article.thread--card', timeout=30000) 
                     print("HotUKDeals: Successfully waited for deal card element.")
                 except Exception as e:
-                    print(f"HotUKDeals: Did not find expected deal content after navigation (Cloudflare bypass failed?). Error: {e}")
-                    # Print the current page content to see if it's still Cloudflare
+                    print(f"HotUKDeals: Did not find expected deal content after navigation (Cloudflare bypass failed without stealth?). Error: {e}")
                     print(f"HotUKDeals: Current HTML content (first 1000 chars):\n{page.content()[:1000]}...")
-                    break # Break if we can't find the content
+                    break 
 
-                # Get the fully rendered HTML content
                 html_content = page.content()
                 soup = BeautifulSoup(html_content, 'lxml')
 
@@ -185,11 +170,11 @@ def scrape_hotukdeals(max_pages=1):
                 traceback.print_exc() 
                 break
         
-        browser.close() # Ensure the browser is closed when done
+        browser.close()
     return deals_found
 
 if __name__ == "__main__":
-    print("Starting deal scraping from HotUKDeals using Playwright (with Stealth, UA, Viewport)...")
+    print("Starting deal scraping from HotUKDeals using Playwright (Basic). This may hit Cloudflare blocks...")
     
     print("\n--- Scraping HotUKDeals ---")
     hukd_deals = scrape_hotukdeals(max_pages=1) 

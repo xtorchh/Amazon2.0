@@ -2,5 +2,4 @@ playwright
 beautifulsoup4
 lxml
 requests
-puppeteer-extra-plugin-stealth
 
