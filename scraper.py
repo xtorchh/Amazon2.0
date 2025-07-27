@@ -38,7 +38,6 @@ def send_to_discord(deal_info, source_name="Deal Bot"):
 
     payload = {
         "username": f"{source_name} Deal Bot",
-        # Replace these with actual favicons if you want them to show up
         "avatar_url": "https://www.hotukdeals.com/favicon.ico" if source_name == "HotUKDeals" else "https://www.latestdeals.co.uk/favicon.ico",
         "embeds": [embed]
     }
@@ -74,30 +73,38 @@ def scrape_hotukdeals(max_pages=1):
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'lxml')
 
-            # --- HotUKDeals Specific Selectors (UPDATED - Verify these if issues persist!) ---
-            # Main deal container - Look for an <article> tag with class 'thread--card'
-            products = soup.find_all('article', class_='thread--card')
-            
+            # --- HOTUKDEALS SELECTOR TO VERIFY/UPDATE ---
+            # IMPORTANT: Right-click on a deal on hotukdeals.com -> Inspect.
+            # Find the main HTML tag (e.g., <article>, <div>, <li>) that contains ALL info for one deal.
+            # Example: <article class="thread--card">
+            products = soup.find_all('article', class_='thread--card') # Current best guess
+
             if not products:
                 print("HotUKDeals: No products found with current selector. HTML structure may have changed.")
+                print(f"HotUKDeals: HTML content received (first 500 chars):\n{response.text[:500]}...") # Print beginning of HTML for debugging
+                # If you see a lot of JS or very little content, the page might be rendered via JavaScript
                 break
 
             for product in products:
-                # Title & Link: Usually within h2.thread-title > a.cept-deal-title
-                title_link_tag = product.find('h2', class_='thread-title').find('a', class_='cept-deal-title')
+                # Title & Link: Right-click deal title -> Inspect. Find <a> tag with title text.
+                # Example: <h2 class="thread-title"><a class="cept-deal-title" href="...">Deal Title</a></h2>
+                title_link_tag = product.find('h2', class_='thread-title').find('a', class_='cept-deal-title') # Current best guess
                 title = title_link_tag.text.strip() if title_link_tag else "N/A"
                 link = title_link_tag['href'] if title_link_tag and 'href' in title_link_tag.attrs else "N/A"
                 
-                # Price
-                price_tag = product.find('span', class_='thread-price')
+                # Price: Right-click deal price -> Inspect. Find <span> or <div> with price text.
+                # Example: <span class="thread-price">£12.99</span>
+                price_tag = product.find('span', class_='thread-price') # Current best guess
                 price = price_tag.text.strip() if price_tag else "N/A"
 
-                # Heat Score
-                heat_tag = product.find('span', class_='cept-vote-temp') # Example: span.cept-vote-temp or span.vote-box__score
+                # Heat Score: Right-click heat score (e.g., +100) -> Inspect.
+                # Example: <span class="cept-vote-temp"></span> inside <span class="vote-box__score">
+                heat_tag = product.find('span', class_='cept-vote-temp') # Current best guess
                 heat = heat_tag.text.strip() if heat_tag else "N/A"
 
-                # Image
-                image_tag = product.find('img', class_='thread-image') # Example: img.thread-image
+                # Image: Right-click deal image -> Inspect. Find <img> tag.
+                # Example: <img class="thread-image" src="...">
+                image_tag = product.find('img', class_='thread-image') # Current best guess
                 image_url = image_tag['src'] if image_tag and 'src' in image_tag.attrs else ""
 
                 discount_info = "N/A" # HotUKDeals doesn't have a standard discount percentage element
@@ -113,12 +120,15 @@ def scrape_hotukdeals(max_pages=1):
                     }
                     deals_found.append(deal_item)
                     send_to_discord(deal_item, source_name="HotUKDeals")
+                else:
+                    print(f"HotUKDeals: Skipped incomplete deal. Title: {title}, Link: {link}, Price: {price}")
 
-            # HotUKDeals pagination (UPDATED - still challenging, often JS loaded)
-            # This looks for a simple 'next page' link, might not always work for deep pagination.
-            next_page_link_container = soup.find('li', class_='pagination-next')
-            if next_page_link_container:
-                next_page_a_tag = next_page_link_container.find('a')
+
+            # HotUKDeals pagination (still challenging, often JS loaded)
+            # Find the 'next' button for pagination. Example: <li class="pagination-next"><a>Next</a></li>
+            next_page_li = soup.find('li', class_='pagination-next') # Current best guess
+            if next_page_li:
+                next_page_a_tag = next_page_li.find('a')
                 if next_page_a_tag and 'href' in next_page_a_tag.attrs:
                     current_url = next_page_a_tag['href']
                     page_num += 1
@@ -126,8 +136,16 @@ def scrape_hotukdeals(max_pages=1):
                     print("HotUKDeals: Next page link found, but href attribute missing.")
                     break
             else:
-                print("HotUKDeals: No more pages or pagination button not found.")
-                break
+                # Check for "Load More" button if standard pagination not found
+                load_more_button = soup.find('a', class_='cept-load-more') # Common for more deals
+                if load_more_button and 'href' in load_more_button.attrs:
+                     current_url = load_more_button['href']
+                     page_num += 1
+                     print(f"HotUKDeals: Found 'Load More' button. Moving to {current_url}")
+                else:
+                    print("HotUKDeals: No more pages or pagination button not found.")
+                    break
+
 
             time.sleep(random.uniform(3, 8))
 
@@ -135,7 +153,7 @@ def scrape_hotukdeals(max_pages=1):
             print(f"Error scraping HotUKDeals: {e}")
             break
         except Exception as e:
-            print(f"An unexpected error occurred during parsing HotUKDeals: {e}. This might mean a selector is finding an element, but not in the expected structure for subsequent operations.")
+            print(f"An unexpected error occurred during parsing HotUKDeals: {e}. This might mean a selector is finding an element, but not in the expected structure for subsequent operations. Check the full HTML content if necessary.")
             break
     return deals_found
 
@@ -163,30 +181,37 @@ def scrape_latestdeals(max_pages=1):
             response.raise_for_status()
             soup = BeautifulSoup(response.text, 'lxml')
 
-            # --- LatestDeals Specific Selectors (UPDATED - Verify these if issues persist!) ---
-            # Main deal container - This class still appears correct.
-            products = soup.find_all('div', class_='ld-card ld-card--deal')
+            # --- LATESTDEALS SELECTOR TO VERIFY/UPDATE ---
+            # IMPORTANT: Right-click on a deal on latestdeals.co.uk/deals -> Inspect.
+            # Find the main HTML tag (e.g., <div>, <article>, <li>) that contains ALL info for one deal.
+            # Example: <div class="ld-card ld-card--deal">
+            products = soup.find_all('div', class_='ld-card ld-card--deal') # Current best guess
 
             if not products:
                 print("LatestDeals: No products found with current selector. HTML structure may have changed.")
+                print(f"LatestDeals: HTML content received (first 500 chars):\n{response.text[:500]}...") # Print beginning of HTML for debugging
                 break
 
             for product in products:
-                # Title & Link: Usually within h2.ld-card__title > a.ld-card__link
-                title_link_tag = product.find('h2', class_='ld-card__title').find('a', class_='ld-card__link')
+                # Title & Link: Right-click deal title -> Inspect. Find <a> tag with title text.
+                # Example: <h2 class="ld-card__title"><a class="ld-card__link" href="...">Deal Title</a></h2>
+                title_link_tag = product.find('h2', class_='ld-card__title').find('a', class_='ld-card__link') # Current best guess
                 title = title_link_tag.text.strip() if title_link_tag else "N/A"
                 link = title_link_tag['href'] if title_link_tag and 'href' in title_link_tag.attrs else "N/A"
 
-                # Price
-                price_tag = product.find('span', class_='ld-card__price')
+                # Price: Right-click deal price -> Inspect. Find <span> or <div> with price text.
+                # Example: <span class="ld-card__price">£10.00</span>
+                price_tag = product.find('span', class_='ld-card__price') # Current best guess
                 price = price_tag.text.strip() if price_tag else "N/A"
                 
-                # Likes
-                likes_tag = product.find('span', class_='js-likes-count')
+                # Likes: Right-click likes count (e.g., 100 Likes) -> Inspect.
+                # Example: <span class="js-likes-count">100</span>
+                likes_tag = product.find('span', class_='js-likes-count') # Current best guess
                 likes = likes_tag.text.strip() if likes_tag else "0"
 
-                # Image
-                image_tag = product.find('img', class_='ld-card__image')
+                # Image: Right-click deal image -> Inspect. Find <img> tag.
+                # Example: <img class="ld-card__image" src="...">
+                image_tag = product.find('img', class_='ld-card__image') # Current best guess
                 image_url = image_tag['src'] if image_tag and 'src' in image_tag.attrs else ""
 
                 discount_info = "N/A" # LatestDeals doesn't have a standard discount percentage element
@@ -202,14 +227,16 @@ def scrape_latestdeals(max_pages=1):
                     }
                     deals_found.append(deal_item)
                     send_to_discord(deal_item, source_name="LatestDeals")
+                else:
+                    print(f"LatestDeals: Skipped incomplete deal. Title: {title}, Link: {link}, Price: {price}")
 
             # LatestDeals pagination (UPDATED)
-            # Looks for the li with class 'pagination__item--next' and then the 'a' tag inside it
-            next_page_li = soup.find('li', class_='pagination__item--next')
+            # Find the 'next' button for pagination. Example: <li class="pagination__item--next"><a class="pagination__link" href="...">Next</a></li>
+            next_page_li = soup.find('li', class_='pagination__item--next') # Current best guess
             if next_page_li:
                 next_page_a_tag = next_page_li.find('a', class_='pagination__link')
                 if next_page_a_tag and 'href' in next_page_a_tag.attrs:
-                    current_url = next_page_a_tag['href'] # LatestDeals uses full URLs for pagination
+                    current_url = next_page_a_tag['href'] # LatestDeals usually uses full URLs for pagination
                     page_num += 1
                 else:
                     print("LatestDeals: Next page link container found, but 'a' tag or href missing.")
@@ -224,7 +251,7 @@ def scrape_latestdeals(max_pages=1):
             print(f"Error scraping LatestDeals: {e}")
             break
         except Exception as e:
-            print(f"An unexpected error occurred during parsing LatestDeals: {e}. This might mean a selector is finding an element, but not in the expected structure for subsequent operations.")
+            print(f"An unexpected error occurred during parsing LatestDeals: {e}. This might mean a selector is finding an element, but not in the expected structure for subsequent operations. Check the full HTML content if necessary.")
             break
     return deals_found
 
@@ -232,14 +259,14 @@ if __name__ == "__main__":
     
     print("Starting deal scraping from HotUKDeals and LatestDeals...")
     
-    # You can adjust max_pages for each site if you want to scrape more pages.
-    # Be mindful of the sites' terms of service and server load.
+    # Start with 1 page for each to quickly test the new selectors.
+    # If successful, increase max_pages for more coverage (e.g., 2 or 3).
     
     print("\n--- Scraping HotUKDeals ---")
-    hukd_deals = scrape_hotukdeals(max_pages=1) # Start with 1 page to test, increase to 2-3 if working
+    hukd_deals = scrape_hotukdeals(max_pages=1)
 
     print("\n--- Scraping LatestDeals ---")
-    ld_deals = scrape_latestdeals(max_pages=1) # Start with 1 page to test, increase to 2-3 if working
+    ld_deals = scrape_latestdeals(max_pages=1)
 
     total_deals_found = len(hukd_deals) + len(ld_deals)
     if total_deals_found == 0:
