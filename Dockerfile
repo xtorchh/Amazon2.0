@@ -1,6 +1,6 @@
-# Use a Python 3.11 slim image based on Debian Bookworm (Debian 12)
-# Python 3.11 is very stable and has wide library support.
-FROM python:3.11-slim-bookworm
+# Use a Python 3.9 slim image based on Debian Bookworm (Debian 12)
+# Python 3.9 is a very stable version with broad library support.
+FROM python:3.9-slim-bookworm
 
 # Set the working directory in the container
 WORKDIR /app
@@ -64,5 +64,3 @@ COPY . .
 
 # Command to run the application when the container starts.
 CMD ["python", "scraper.py"]
-
-
