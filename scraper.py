@@ -84,9 +84,9 @@ def find_text_with_multiple_selectors(soup_or_element, selector_list, attribute=
         return element.text.strip()
     return "N/A"
 
-# --- Scraper for HotUKDeals.com (no changes to selector lists, assuming they mostly work) ---
+# --- Scraper for HotUKDeals.com with basic Playwright and backup selectors ---
 def scrape_hotukdeals(max_pages=1):
-    """Scrapes hotukdeals.com for popular deals using basic Playwright with backup selectors."""
+    """Scrapes hotukdeals.com for popular deals using basic Playwright with backup selectors and scrolling."""
     base_url = "https://www.hotukdeals.com/"
     
     deals_found = []
@@ -143,7 +143,7 @@ def scrape_hotukdeals(max_pages=1):
         browser = p.chromium.launch(headless=True)
         
         context = browser.new_context(
-            user_agent="Mozilla/50 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
             viewport={"width": 1920, "height": 1080}
         )
         page = context.new_page()
@@ -151,8 +151,11 @@ def scrape_hotukdeals(max_pages=1):
         page_num = 1
         current_url = base_url
 
+        # Configure how many times to scroll down for more content
+        SCROLL_ATTEMPTS_PER_PAGE = 3 # Scroll down 3 times to load more deals if they are lazy-loaded
+        
         while page_num <= max_pages: 
-            print(f"Scraping HotUKDeals page {page_num} from {current_url} using Playwright (Basic with backup selectors)...")
+            print(f"Scraping HotUKDeals page {page_num} from {current_url} using Playwright (Basic with backup selectors and scrolling)...")
             try:
                 page.goto(current_url, wait_until="networkidle", timeout=90000)
                 
@@ -165,6 +168,20 @@ def scrape_hotukdeals(max_pages=1):
                     print(f"HotUKDeals: Current HTML content (first 1000 chars):\n{page.content()[:1000]}...")
                     break 
 
+                # --- NEW: Scroll down to load more content dynamically ---
+                print(f"HotUKDeals: Attempting to scroll down {SCROLL_ATTEMPTS_PER_PAGE} times to load more deals.")
+                for i in range(SCROLL_ATTEMPTS_PER_PAGE):
+                    print(f"  Scrolling attempt {i+1} of {SCROLL_ATTEMPTS_PER_PAGE}...")
+                    # Scroll to the bottom of the page
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    # Give the page a moment to load new content after scrolling
+                    time.sleep(random.uniform(2, 4))
+                    # Optionally, wait for network activity to settle after scroll.
+                    # This can be important for pages that load content via AJAX after scrolling.
+                    page.wait_for_load_state('networkidle', timeout=10000) 
+                print("HotUKDeals: Finished scrolling attempts.")
+                # --- END NEW SCROLLING LOGIC ---
+
                 html_content = page.content()
                 soup = BeautifulSoup(html_content, 'lxml')
 
@@ -176,7 +193,7 @@ def scrape_hotukdeals(max_pages=1):
                         break
 
                 if not products:
-                    print("HotUKDeals: No products found with any of the current main selectors.")
+                    print("HotUKDeals: No products found with any of the current main selectors (even after scrolling).")
                     print(f"HotUKDeals: HTML content received (first 2000 chars for debugging):\n{html_content[:2000]}...")
                     break
 
@@ -200,11 +217,11 @@ def scrape_hotukdeals(max_pages=1):
                             "discount_info": discount_info
                         }
                         deals_found.append(deal_item)
-                        # --- Send to Discord is now inside its own rate-limited function ---
                         send_to_discord(deal_item, source_name="HotUKDeals")
                     else:
                         print(f"HotUKDeals: Skipped incomplete deal (potential selector issue). Title: '{title}', Link: '{link}', Price: '{price}'")
 
+                # --- HOTUKDEALS PAGINATION WITH PLAYWRIGHT (Remains after scrolling attempts) ---
                 next_button_selector = 'li.pagination-next a'
                 load_more_selector = 'a.cept-load-more'
 
@@ -228,9 +245,6 @@ def scrape_hotukdeals(max_pages=1):
                     print("HotUKDeals: Max pages reached. Stopping pagination.")
                     break
 
-                # Removed the random sleep here as it's now handled inside send_to_discord for per-deal sends
-                # time.sleep(random.uniform(2, 5)) 
-
             except Exception as e:
                 print(f"Error during Playwright scraping for HotUKDeals: {e}")
                 import traceback
@@ -241,7 +255,7 @@ def scrape_hotukdeals(max_pages=1):
     return deals_found
 
 if __name__ == "__main__":
-    print("Starting deal scraping from HotUKDeals using Playwright (Basic with backup selectors).")
+    print("Starting deal scraping from HotUKDeals using Playwright (Basic with backup selectors and scrolling).")
     
     print("\n--- Scraping HotUKDeals ---")
     hukd_deals = scrape_hotukdeals(max_pages=1) 
