@@ -3,57 +3,148 @@ from bs4 import BeautifulSoup
 import time
 import random
 import os
-import json # For formatting webhook payload
+import json
 
 # --- Configuration ---
-# Get Discord Webhook URL from environment variables for security
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 if not DISCORD_WEBHOOK_URL:
     print("Warning: DISCORD_WEBHOOK_URL environment variable not set. Deals will not be sent to Discord.")
 
 # --- Helper function to send to Discord ---
-def send_to_discord(deal_info):
+def send_to_discord(deal_info, source_name="Deal Bot"):
     """Sends deal information to a Discord webhook."""
     if not DISCORD_WEBHOOK_URL:
         return
 
-    # Create a Discord embed for better formatting and visual appeal
     embed = {
         "title": deal_info["title"],
         "url": deal_info["link"],
-        "color": 0x00FF00, # Green color for deals
+        "color": 0xFFA500 if source_name == "HotUKDeals" else 0x1E90FF, # Orange for HUKD, DodgerBlue for LD
         "fields": [
             {"name": "Price", "value": deal_info["price"], "inline": True},
-            {"name": "Discount", "value": deal_info["discount_text"], "inline": True}
+            {"name": "Source", "value": source_name, "inline": True},
         ],
-        "thumbnail": {"url": deal_info.get("image_url", "")} # Add image if scraped
+        "thumbnail": {"url": deal_info.get("image_url", "")}
     }
+    
+    # Add discount if available
+    if deal_info.get("discount_info") and deal_info["discount_info"] != "N/A":
+        embed["fields"].append({"name": "Discount Info", "value": deal_info["discount_info"], "inline": False})
+    
+    # Add Heat/Likes if available
+    if deal_info.get("metric_info"):
+        embed["fields"].append({"name": "Popularity", "value": deal_info["metric_info"], "inline": True})
+
 
     payload = {
-        "username": "Amazon UK PC Deals Bot", # Updated bot name
-        "avatar_url": "https://www.amazon.co.uk/favicon.ico", # Amazon's favicon as bot avatar
+        "username": f"{source_name} Deal Bot",
+        "avatar_url": "https://i.imgur.com/example.png" if source_name == "HotUKDeals" else "https://i.imgur.com/example2.png", # Placeholder, replace with actual favicons or logos
         "embeds": [embed]
     }
 
     try:
-        response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10) # Added timeout
-        response.raise_for_status() # Raise an exception for HTTP errors (e.g., 400, 500)
-        print(f"Successfully sent deal to Discord: {deal_info['title']}")
+        response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+        response.raise_for_status()
+        print(f"Successfully sent deal to Discord: {deal_info['title']} (Source: {source_name})")
     except requests.exceptions.RequestException as e:
-        print(f"Error sending to Discord webhook: {e}")
+        print(f"Error sending to Discord webhook from {source_name}: {e}")
 
-# --- Amazon Scraper Function ---
-def get_amazon_deals(min_discount=70, max_pages=3):
-    """
-    Scrapes Amazon UK for 'PC Components' deals with a specified minimum discount across multiple pages.
-    """
-    # Using the specific URL provided, simplified to include only the essential keyword and filter
-    # The 'crid', 'sprefix', and 'ref' parameters are often session-specific or for tracking,
-    # and are not strictly necessary for a programmatic search.
-    initial_url = f"https://www.amazon.co.uk/s?k=pc+components&pct-off={min_discount}-"
-    target_search_term = "PC Components" # For print statements
+# --- Scraper for HotUKDeals.com ---
+def scrape_hotukdeals(max_pages=1):
+    """Scrapes hotukdeals.com for popular deals."""
+    base_url = "https://www.hotukdeals.com/"
+    # For hot deals, homepage is sufficient for first page. Pagination is different.
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
+    }
 
-    # Mimic a real browser's headers to avoid being easily blocked
+    deals_found = []
+    page_num = 1
+    current_url = base_url
+
+    while page_num <= max_pages: # Limiting pages for HotUKDeals as pagination is complex
+        print(f"Scraping HotUKDeals page {page_num} from {current_url}...")
+        try:
+            response = requests.get(current_url, headers=headers, timeout=15)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'lxml')
+
+            # --- HotUKDeals Specific Selectors (verify these!) ---
+            # Main deal container
+            products = soup.find_all('div', {'data-deal-id': True, 'data-card-type': 'deal'})
+            
+            if not products:
+                print("No more products found on HotUKDeals page or end of results.")
+                break
+
+            for product in products:
+                title_tag = product.find('a', class_='cept-deal-title')
+                title = title_tag.text.strip() if title_tag else "N/A"
+
+                link = title_tag['href'] if title_tag and 'href' in title_tag.attrs else "N/A"
+                if link and not link.startswith("http"): # Ensure full URL for relative links
+                    link = "https://www.hotukdeals.com" + link
+
+                price_tag = product.find('span', class_='thread-price')
+                price = price_tag.text.strip() if price_tag else "N/A"
+
+                heat_tag = product.find('span', class_='cept-vote-temp')
+                heat = heat_tag.text.strip() if heat_tag else "N/A"
+
+                image_tag = product.find('img', class_='cept-img-loaded')
+                image_url = image_tag['src'] if image_tag and 'src' in image_tag.attrs else ""
+
+                # HotUKDeals doesn't have a direct 'percentage off' element,
+                # but it might be in the title or description (which we're not scraping fully here).
+                # We'll just indicate it's from HotUKDeals for now.
+                discount_info = "Check deal page for discount details"
+
+                if title != "N/A" and link != "N/A" and price != "N/A":
+                    deal_item = {
+                        "title": title,
+                        "price": price,
+                        "link": link,
+                        "image_url": image_url,
+                        "metric_info": f"🔥 {heat} Heat",
+                        "discount_info": discount_info # Placeholder
+                    }
+                    deals_found.append(deal_item)
+                    send_to_discord(deal_item, source_name="HotUKDeals")
+
+            # HotUKDeals pagination is usually done via "load more" button or different page numbering.
+            # For simplicity, we'll limit to max_pages (default 1) for the main page.
+            # Implementing robust pagination for HUKD requires deeper inspection of their JS.
+            if page_num < max_pages: # Only try to go to next if max_pages > 1
+                 next_page_link = soup.find('a', class_='pagination-next') # Check this if you want more pages
+                 if next_page_link and 'href' in next_page_link.attrs:
+                     current_url = "https://www.hotukdeals.com" + next_page_link['href']
+                     page_num += 1
+                 else:
+                     print("HotUKDeals: No more pages or pagination button not found.")
+                     break
+            else:
+                break # Reached max_pages limit
+
+            time.sleep(random.uniform(3, 8))
+
+        except requests.exceptions.RequestException as e:
+            print(f"Error scraping HotUKDeals: {e}")
+            break
+        except Exception as e:
+            print(f"An unexpected error occurred during parsing HotUKDeals: {e}")
+            break
+    return deals_found
+
+# --- Scraper for LatestDeals.co.uk ---
+def scrape_latestdeals(max_pages=1):
+    """Scrapes latestdeals.co.uk for recent deals."""
+    base_url = "https://www.latestdeals.co.uk/deals"
+    
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36", # Current User-Agent (July 2025)
         "Accept-Language": "en-US,en;q=0.9",
@@ -64,117 +155,95 @@ def get_amazon_deals(min_discount=70, max_pages=3):
 
     deals_found = []
     page_num = 1
-    current_url = initial_url
+    current_url = base_url
 
     while page_num <= max_pages:
-        print(f"Scraping page {page_num} for '{target_search_term}' with {min_discount}% off from {current_url}...")
+        print(f"Scraping LatestDeals page {page_num} from {current_url}...")
         try:
-            response = requests.get(current_url, headers=headers, timeout=15) # Increased timeout
-            response.raise_for_status() # Raise an exception for bad status codes
-
+            response = requests.get(current_url, headers=headers, timeout=15)
+            response.raise_for_status()
             soup = BeautifulSoup(response.text, 'lxml')
 
-            # --- IMPORTANT: Amazon HTML Structure can change! ---
-            # You MUST inspect Amazon.co.uk page source of a 'PC Components' search result page
-            # to find the current correct selectors.
-            
-            # These selectors are generally more consistent on standard search results pages
-            # compared to the dedicated /deals page.
-            products = soup.find_all('div', {'data-component-type': 's-search-result'})
+            # --- LatestDeals Specific Selectors (verify these!) ---
+            # Main deal container
+            products = soup.find_all('div', class_='ld-card ld-card--deal')
 
             if not products:
-                print("No more products found on this page or end of results for this query.")
-                break # Exit loop if no products are found
+                print("No more products found on LatestDeals page or end of results.")
+                break
 
             for product in products:
-                # Extract product title
-                title_tag = product.find('span', class_='a-size-medium a-color-base a-text-normal')
+                title_tag = product.find('h2', class_='ld-card__title').find('a', class_='ld-card__link')
                 title = title_tag.text.strip() if title_tag else "N/A"
 
-                # Extract product link
-                link_tag = product.find('a', class_='a-link-normal s-underline-text s-underline-link-text s-link-style a-text-normal')
-                link = "https://www.amazon.co.uk" + link_tag['href'] if link_tag and 'href' in link_tag.attrs else "N/A"
+                link = title_tag['href'] if title_tag and 'href' in title_tag.attrs else "N/A"
+                if link and not link.startswith("http"):
+                    link = "https://www.latestdeals.co.uk" + link
+
+                price_tag = product.find('span', class_='ld-card__price')
+                price = price_tag.text.strip() if price_tag else "N/A"
                 
-                # Extract price. Amazon prices can be split (whole/fraction) or in a hidden span.
-                price_whole_tag = product.find('span', class_='a-price-whole')
-                price_fraction_tag = product.find('span', class_='a-price-fraction')
-                price_symbol_tag = product.find('span', class_='a-price-symbol')
+                likes_tag = product.find('span', class_='js-likes-count')
+                likes = likes_tag.text.strip() if likes_tag else "0"
 
-                price_text = "N/A"
-                if price_whole_tag and price_fraction_tag and price_symbol_tag:
-                    price_text = f"{price_symbol_tag.text}{price_whole_tag.text}.{price_fraction_tag.text}"
-                else: # Fallback for hidden price (e.g., for "a-offscreen" span)
-                    hidden_price_tag = product.find('span', class_='a-offscreen')
-                    if hidden_price_tag:
-                        price_text = hidden_price_tag.text.strip()
-
-                # Discount information: Primarily filtered by URL.
-                discount_text = "N/A (filtered by URL)"
-                # Look for explicit discount percentage if present on the page (e.g., "70% off")
-                discount_span = product.find('span', class_='a-badge-text') # Common class for badges
-                if discount_span and "% off" in discount_span.text:
-                    discount_text = discount_span.text.strip()
-                elif product.find('span', class_='s-label-popover-default'): # Another common pattern
-                     discount_text = product.find('span', class_='s-label-popover-default').text.strip()
-
-                # Optional: Scrape image URL for Discord embed thumbnail
-                image_tag = product.find('img', class_='s-image')
+                image_tag = product.find('img', class_='ld-card__image')
                 image_url = image_tag['src'] if image_tag and 'src' in image_tag.attrs else ""
 
-                # Only add if we have basic valid info
-                if title != "N/A" and link != "N/A" and price_text != "N/A":
+                # LatestDeals also doesn't have a direct 'percentage off' element consistently
+                # You might find it in the title or description on their site.
+                discount_info = "Check deal page for discount details"
+                
+                if title != "N/A" and link != "N/A" and price != "N/A":
                     deal_item = {
                         "title": title,
-                        "price": price_text,
+                        "price": price,
                         "link": link,
-                        "discount_text": discount_text,
-                        "image_url": image_url
+                        "image_url": image_url,
+                        "metric_info": f"👍 {likes} Likes",
+                        "discount_info": discount_info # Placeholder
                     }
                     deals_found.append(deal_item)
-                    send_to_discord(deal_item) # Send each deal to Discord as it's found
+                    send_to_discord(deal_item, source_name="LatestDeals")
 
-            # Find the "Next Page" button/link to continue pagination
-            next_page_link = soup.find('a', class_='s-pagination-next') # This class is common on search pages
-            if next_page_link and 'href' in next_page_link.attrs:
-                # Amazon's 'next' link is usually a relative URL, so append it to the base.
-                current_url = "https://www.amazon.co.uk" + next_page_link['href']
-                page_num += 1
+            # LatestDeals pagination
+            next_page_link = soup.find('li', class_='pagination__item--next')
+            if next_page_link:
+                next_page_a_tag = next_page_link.find('a', class_='pagination__link')
+                if next_page_a_tag and 'href' in next_page_a_tag.attrs:
+                    current_url = next_page_a_tag['href'] # LatestDeals uses full URLs for pagination
+                    page_num += 1
+                else:
+                    print("LatestDeals: No more pages or pagination button not found.")
+                    break
             else:
-                print("No more pages found (or pagination structure changed). Stopping.")
-                break # Exit loop if no next page link
+                break # Reached max_pages limit
 
-            # Be polite to Amazon's servers and avoid IP blocking
-            time.sleep(random.uniform(3, 8)) # Random delay between requests
+            time.sleep(random.uniform(3, 8))
 
-        except requests.exceptions.HTTPError as e:
-            print(f"HTTP Error {e.response.status_code} for {current_url}: {e.response.text}")
-            if e.response.status_code == 404: # Page not found
-                print("Page not found, stopping pagination.")
-            elif e.response.status_code == 429: # Too Many Requests
-                print("Received a 429 (Too Many Requests). Pausing for a longer duration.")
-                time.sleep(random.uniform(60, 120)) # Longer pause for 429
+        except requests.exceptions.RequestException as e:
+            print(f"Error scraping LatestDeals: {e}")
             break
-        except requests.exceptions.ConnectionError as e:
-            print(f"Connection Error: {e}. Retrying in 10 seconds...")
-            time.sleep(10)
-        except requests.exceptions.Timeout as e:
-            print(f"Request timed out: {e}. Retrying in 5 seconds...")
-            time.sleep(5)
         except Exception as e:
-            print(f"An unexpected error occurred during parsing or request: {e}")
+            print(f"An unexpected error occurred during parsing LatestDeals: {e}")
             break
-
     return deals_found
 
 if __name__ == "__main__":
     
-    print("Starting Amazon UK 70% off 'PC Components' deal scraper...")
-    # No search_term needed as the URL is hardcoded for PC Components.
-    # Limiting to 3 pages for a balance between speed and coverage for automated runs.
-    found_deals = get_amazon_deals(min_discount=70, max_pages=3)
+    print("Starting deal scraping from HotUKDeals and LatestDeals...")
+    
+    # You can adjust max_pages for each site if you want to scrape more pages.
+    # Be mindful of the sites' terms of service and server load.
+    
+    print("\n--- Scraping HotUKDeals ---")
+    hukd_deals = scrape_hotukdeals(max_pages=2) # Scrape first 2 pages of HUKD
 
-    if not found_deals:
-        print("No 'PC Components' deals found with at least 70% off in this run.")
+    print("\n--- Scraping LatestDeals ---")
+    ld_deals = scrape_latestdeals(max_pages=2) # Scrape first 2 pages of LatestDeals
+
+    total_deals_found = len(hukd_deals) + len(ld_deals)
+    if total_deals_found == 0:
+        print("No new deals found from either HotUKDeals or LatestDeals in this run.")
     else:
-        print(f"\nScraping complete. Found and attempted to send {len(found_deals)} 'PC Components' deals.")
+        print(f"\nScraping complete. Found and attempted to send {len(hukd_deals)} deals from HotUKDeals and {len(ld_deals)} deals from LatestDeals.")
 
