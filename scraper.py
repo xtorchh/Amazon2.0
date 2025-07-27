@@ -1,10 +1,13 @@
-import requests # Keeping requests just in case, though not used for HUKD anymore
+import requests
 from bs4 import BeautifulSoup
 import time
 import random
 import os
 import json
-from playwright.sync_api import sync_playwright
+# Import from playwright_extra instead of playwright.sync_api
+from playwright_extra import sync_playwright
+# Import the stealth plugin
+from puppeteer_extra_plugin_stealth import stealth
 
 # --- Configuration ---
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
@@ -50,42 +53,62 @@ def send_to_discord(deal_info, source_name="Deal Bot"):
     except requests.exceptions.RequestException as e:
         print(f"Error sending to Discord webhook from {source_name}: {e}")
 
-# --- Scraper for HotUKDeals.com with Playwright ---
+# --- Scraper for HotUKDeals.com with Playwright-Extra (Stealth, User Agent, Viewport) ---
 def scrape_hotukdeals(max_pages=1):
-    """Scrapes hotukdeals.com for popular deals using Playwright."""
+    """Scrapes hotukdeals.com for popular deals using Playwright with stealth plugin, user agent, and viewport."""
     base_url = "https://www.hotukdeals.com/"
     
     deals_found = []
     
+    # Apply the stealth plugin to Playwright
+    # This modifies Playwright to evade common bot detections
+    sync_playwright.add_plugin(stealth)
+
     with sync_playwright() as p:
-        # Launch a Chromium browser in headless mode (no visible UI)
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        
+        # --- Configure Browser Context with User Agent and Viewport ---
+        # Creating a new browser context allows you to set specific options
+        # like user_agent and viewport, which apply to all pages opened within this context.
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080} # Common desktop resolution
+        )
+        page = context.new_page() # Use the context to create the page
+        # --- End Context Configuration ---
         
         page_num = 1
         current_url = base_url
 
         while page_num <= max_pages: 
-            print(f"Scraping HotUKDeals page {page_num} from {current_url} using Playwright...")
+            print(f"Scraping HotUKDeals page {page_num} from {current_url} using Playwright (Stealth, UA, Viewport)...")
             try:
-                # Navigate to the page and wait for the DOM to be ready
-                # 'domcontentloaded' waits for HTML parsing, 'networkidle' waits for network activity to cease
-                page.goto(current_url, wait_until="domcontentloaded", timeout=60000) 
+                # Navigate to the page.
+                # Use 'networkidle' to wait for network activity to cease, which might help with JS challenges.
+                # Increased timeout significantly as Cloudflare challenges can take time.
+                page.goto(current_url, wait_until="networkidle", timeout=90000) # Increased timeout to 90 seconds
                 
-                # OPTIONAL: Wait for the main deal elements to be visible/loaded
-                # This can help if content is lazy-loaded or takes time to appear.
-                # page.wait_for_selector('article.thread--card', timeout=30000) 
+                # IMPORTANT: After goto, wait for a known element on the *actual* page.
+                # This will give Cloudflare time to resolve if it can.
+                # If this selector is not found within the timeout, it means Cloudflare blocked us.
+                try:
+                    page.wait_for_selector('article.thread--card', timeout=30000) # Wait up to 30s for a deal card
+                    print("HotUKDeals: Successfully waited for deal card element.")
+                except Exception as e:
+                    print(f"HotUKDeals: Did not find expected deal content after navigation (Cloudflare bypass failed?). Error: {e}")
+                    # Print the current page content to see if it's still Cloudflare
+                    print(f"HotUKDeals: Current HTML content (first 1000 chars):\n{page.content()[:1000]}...")
+                    break # Break if we can't find the content
 
                 # Get the fully rendered HTML content
                 html_content = page.content()
                 soup = BeautifulSoup(html_content, 'lxml')
 
                 # --- HOTUKDEALS MAIN DEAL CONTAINER SELECTOR ---
-                # This should still be accurate. Playwright ensures JS rendering.
                 products = soup.find_all('article', class_='thread--card') 
 
                 if not products:
-                    print("HotUKDeals: No products found with current selector. HTML structure may have changed or content not loaded.")
+                    print("HotUKDeals: No products found with current selector AFTER Cloudflare check. HTML structure may have changed or content not loaded.")
                     print(f"HotUKDeals: HTML content received (first 2000 chars for debugging):\n{html_content[:2000]}...")
                     break
 
@@ -98,7 +121,6 @@ def scrape_hotukdeals(max_pages=1):
                     discount_info = "N/A"
 
                     # --- HOTUKDEALS NESTED SELECTORS ---
-                    # These should be robust enough with Playwright
                     title_link_tag = product.find('a', class_='cept-deal-title')
                     if title_link_tag:
                         title = title_link_tag.text.strip()
@@ -132,24 +154,21 @@ def scrape_hotukdeals(max_pages=1):
                         print(f"HotUKDeals: Skipped incomplete deal (potential selector issue). Title: '{title}', Link: '{link}', Price: '{price}'")
 
                 # --- HOTUKDEALS PAGINATION WITH PLAYWRIGHT ---
-                # Playwright allows clicking buttons, which is more reliable than parsing URLs
-                next_button_selector = 'li.pagination-next a' # For standard 'next page' links
-                load_more_selector = 'a.cept-load-more' # For "Load More" buttons
+                next_button_selector = 'li.pagination-next a'
+                load_more_selector = 'a.cept-load-more'
 
                 if page_num < max_pages:
-                    # Prefer clicking 'Load More' if it exists, as HUKD often uses it.
                     if page.is_visible(load_more_selector, timeout=5000): 
                         print("HotUKDeals: Clicking 'Load More' button...")
                         page.click(load_more_selector)
-                        # Wait for network activity to settle after clicking, indicating new content loaded
                         page.wait_for_load_state('networkidle', timeout=30000) 
-                        current_url = page.url # URL might change, or content is appended. Update to current URL.
+                        current_url = page.url 
                         page_num += 1
-                    elif page.is_visible(next_button_selector, timeout=5000): # Fallback to standard next page link
+                    elif page.is_visible(next_button_selector, timeout=5000): 
                         print("HotUKDeals: Clicking next page link...")
                         page.click(next_button_selector)
                         page.wait_for_load_state('domcontentloaded', timeout=30000)
-                        current_url = page.url # Update URL for the next iteration
+                        current_url = page.url 
                         page_num += 1
                     else:
                         print("HotUKDeals: No more pages or load more button found. Stopping pagination.")
@@ -158,24 +177,21 @@ def scrape_hotukdeals(max_pages=1):
                     print("HotUKDeals: Max pages reached. Stopping pagination.")
                     break
 
-                time.sleep(random.uniform(2, 5)) # Shorter, more realistic delay for browser automation
+                time.sleep(random.uniform(2, 5)) 
 
             except Exception as e:
                 print(f"Error during Playwright scraping for HotUKDeals: {e}")
-                # Log full traceback for better debugging on Railway
                 import traceback
                 traceback.print_exc() 
                 break
         
-        browser.close() # Ensure browser is closed
+        browser.close() # Ensure the browser is closed when done
     return deals_found
 
 if __name__ == "__main__":
-    print("Starting deal scraping from HotUKDeals using Playwright...")
+    print("Starting deal scraping from HotUKDeals using Playwright (with Stealth, UA, Viewport)...")
     
     print("\n--- Scraping HotUKDeals ---")
-    # Start with 1 page to quickly test Playwright setup.
-    # If successful, increase max_pages for more coverage (e.g., 2 or 3).
     hukd_deals = scrape_hotukdeals(max_pages=1) 
 
     total_deals_found = len(hukd_deals)
@@ -183,4 +199,3 @@ if __name__ == "__main__":
         print("No new deals found from HotUKDeals in this run.")
     else:
         print(f"\nScraping complete. Found and attempted to send {len(hukd_deals)} deals from HotUKDeals.")
-
