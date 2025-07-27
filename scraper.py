@@ -13,7 +13,7 @@ if not DISCORD_WEBHOOK_URL:
 
 # --- Helper function to send to Discord ---
 def send_to_discord(deal_info, source_name="Deal Bot"):
-    """Sends deal information to a Discord webhook."""
+    """Sends deal information to a Discord webhook, with rate limit handling."""
     if not DISCORD_WEBHOOK_URL:
         return
 
@@ -43,12 +43,24 @@ def send_to_discord(deal_info, source_name="Deal Bot"):
 
     try:
         response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
-        response.raise_for_status()
+        
+        # --- Handle Discord Rate Limits ---
+        if response.status_code == 429:
+            retry_after = int(response.headers.get("Retry-After", 1)) / 1000 # Retry-After is in milliseconds
+            print(f"Discord rate limited. Retrying after {retry_after:.2f} seconds...")
+            time.sleep(retry_after + 0.1) # Add a small buffer
+            response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10) # Retry the request
+        # --- End Rate Limit Handling ---
+
+        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
         print(f"Successfully sent deal to Discord: {deal_info['title']} (Source: {source_name})")
     except requests.exceptions.RequestException as e:
         print(f"Error sending to Discord webhook from {source_name}: {e}")
+    
+    # --- Add a small general delay after each send ---
+    time.sleep(1) # Wait 1 second between each Discord message to avoid hitting limits again
 
-# --- Helper function to try multiple selectors ---
+# --- Helper function to try multiple selectors (no change) ---
 def find_element_with_multiple_selectors(soup_or_element, selector_list):
     """
     Tries to find an element using a list of CSS selectors.
@@ -57,7 +69,6 @@ def find_element_with_multiple_selectors(soup_or_element, selector_list):
     for selector in selector_list:
         found_element = soup_or_element.select_one(selector)
         if found_element:
-            # print(f"  Found element with selector: {selector}") # Uncomment for verbose debugging
             return found_element
     return None
 
@@ -73,7 +84,7 @@ def find_text_with_multiple_selectors(soup_or_element, selector_list, attribute=
         return element.text.strip()
     return "N/A"
 
-# --- Scraper for HotUKDeals.com with basic Playwright and backup selectors ---
+# --- Scraper for HotUKDeals.com (no changes to selector lists, assuming they mostly work) ---
 def scrape_hotukdeals(max_pages=1):
     """Scrapes hotukdeals.com for popular deals using basic Playwright with backup selectors."""
     base_url = "https://www.hotukdeals.com/"
@@ -107,6 +118,9 @@ def scrape_hotukdeals(max_pages=1):
         '.price-text',                           # Another common naming
         'span[class*="price"]',                  # Span with "price" in class
         '.current-price',                        # If they differentiate current/old price
+        'div[class*="price"]',                   # Try a div for price
+        '[itemprop="price"]',                    # Microdata price
+        '.price',                                # Very generic price class
     ]
 
     HEAT_SELECTORS = [
@@ -129,7 +143,7 @@ def scrape_hotukdeals(max_pages=1):
         browser = p.chromium.launch(headless=True)
         
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            user_agent="Mozilla/50 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
             viewport={"width": 1920, "height": 1080}
         )
         page = context.new_page()
@@ -142,29 +156,24 @@ def scrape_hotukdeals(max_pages=1):
             try:
                 page.goto(current_url, wait_until="networkidle", timeout=90000)
                 
-                # --- Update: Wait for ANY of the main deal container selectors ---
+                combined_main_selector = ', '.join(MAIN_DEAL_CONTAINER_SELECTORS)
                 try:
-                    # Construct a CSS selector string that tries all main container selectors
-                    combined_main_selector = ', '.join(MAIN_DEAL_CONTAINER_SELECTORS)
                     page.wait_for_selector(combined_main_selector, timeout=30000) 
                     print("HotUKDeals: Successfully waited for a deal card element (using backup selectors).")
                 except Exception as e:
                     print(f"HotUKDeals: Did not find expected deal content after navigation (all backup selectors failed?). Error: {e}")
                     print(f"HotUKDeals: Current HTML content (first 1000 chars):\n{page.content()[:1000]}...")
-                    # If even backup selectors for main container fail, likely total block or major redesign.
                     break 
 
                 html_content = page.content()
                 soup = BeautifulSoup(html_content, 'lxml')
 
-                # --- Use the helper function for the main deal containers ---
                 products = []
                 for selector in MAIN_DEAL_CONTAINER_SELECTORS:
-                    found_products = soup.select(selector) # Use select (find_all equivalent for CSS selectors)
+                    found_products = soup.select(selector)
                     if found_products:
                         products.extend(found_products)
-                        # print(f"  Found products with main selector: {selector}") # Uncomment for verbose debugging
-                        break # Stop after finding products with the first working selector
+                        break
 
                 if not products:
                     print("HotUKDeals: No products found with any of the current main selectors.")
@@ -172,7 +181,6 @@ def scrape_hotukdeals(max_pages=1):
                     break
 
                 for product in products:
-                    # --- Use helper functions for nested elements ---
                     title = find_text_with_multiple_selectors(product, TITLE_SELECTORS)
                     link_element = find_element_with_multiple_selectors(product, TITLE_SELECTORS)
                     link = link_element.get('href').strip() if link_element else "N/A"
@@ -180,7 +188,7 @@ def scrape_hotukdeals(max_pages=1):
                     price = find_text_with_multiple_selectors(product, PRICE_SELECTORS)
                     heat = find_text_with_multiple_selectors(product, HEAT_SELECTORS)
                     image_url = find_text_with_multiple_selectors(product, IMAGE_SELECTORS, attribute='src')
-                    discount_info = "N/A" # HotUKDeals typically doesn't have a separate discount % field easily scrapeable
+                    discount_info = "N/A"
 
                     if title != "N/A" and link != "N/A" and price != "N/A":
                         deal_item = {
@@ -192,12 +200,11 @@ def scrape_hotukdeals(max_pages=1):
                             "discount_info": discount_info
                         }
                         deals_found.append(deal_item)
+                        # --- Send to Discord is now inside its own rate-limited function ---
                         send_to_discord(deal_item, source_name="HotUKDeals")
                     else:
                         print(f"HotUKDeals: Skipped incomplete deal (potential selector issue). Title: '{title}', Link: '{link}', Price: '{price}'")
 
-                # --- HOTUKDEALS PAGINATION WITH PLAYWRIGHT ---
-                # These selectors are for buttons/links, less likely to change drastically.
                 next_button_selector = 'li.pagination-next a'
                 load_more_selector = 'a.cept-load-more'
 
@@ -221,7 +228,8 @@ def scrape_hotukdeals(max_pages=1):
                     print("HotUKDeals: Max pages reached. Stopping pagination.")
                     break
 
-                time.sleep(random.uniform(2, 5)) 
+                # Removed the random sleep here as it's now handled inside send_to_discord for per-deal sends
+                # time.sleep(random.uniform(2, 5)) 
 
             except Exception as e:
                 print(f"Error during Playwright scraping for HotUKDeals: {e}")
@@ -233,7 +241,7 @@ def scrape_hotukdeals(max_pages=1):
     return deals_found
 
 if __name__ == "__main__":
-    print("Starting deal scraping from HotUKDeals using Playwright (Basic with backup selectors). This may still hit Cloudflare blocks or miss deals if selectors are very different.")
+    print("Starting deal scraping from HotUKDeals using Playwright (Basic with backup selectors).")
     
     print("\n--- Scraping HotUKDeals ---")
     hukd_deals = scrape_hotukdeals(max_pages=1) 
