@@ -43,17 +43,18 @@ def send_to_discord(deal_info):
         print(f"Error sending to Discord webhook: {e}")
 
 # --- Amazon Scraper Function ---
-def get_amazon_deals(search_query, min_discount=70, max_pages=3):
+def get_amazon_deals(min_discount=70, max_pages=3):
     """
-    Scrapes Amazon UK for deals with a specified minimum discount across multiple pages.
+    Scrapes Amazon UK for general deals with a specified minimum discount across multiple pages.
     """
-    base_url = "https://www.amazon.co.uk/s"
-    # The &pct-off=X- parameter filters for X% off or more
-    initial_url = f"{base_url}?k={search_query.replace(' ', '+')}&pct-off={min_discount}-"
+    # Base URL for Amazon UK Deals page.
+    # We append the percentage-off filter directly to this.
+    initial_url = f"https://www.amazon.co.uk/deals?pct-off={min_discount}-"
 
     # Mimic a real browser's headers to avoid being easily blocked
+    # Updated User-Agent for July 2025
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
@@ -65,7 +66,7 @@ def get_amazon_deals(search_query, min_discount=70, max_pages=3):
     current_url = initial_url
 
     while page_num <= max_pages:
-        print(f"Scraping page {page_num} for '{search_query}' with {min_discount}% off from {current_url}...")
+        print(f"Scraping page {page_num} for general deals with {min_discount}% off from {current_url}...")
         try:
             response = requests.get(current_url, headers=headers, timeout=15) # Increased timeout
             response.raise_for_status() # Raise an exception for bad status codes
@@ -74,22 +75,37 @@ def get_amazon_deals(search_query, min_discount=70, max_pages=3):
 
             # --- IMPORTANT: Amazon HTML Structure can change! ---
             # You MUST inspect Amazon.co.uk page source to find the current correct selectors.
-            # Use your browser's "Inspect Element" (F12) tool on an Amazon search results page.
+            # Use your browser's "Inspect Element" (F12) tool on an Amazon Deals page filtered by 70% off.
             #
             # Common selectors for product items, these may need adjustment.
             products = soup.find_all('div', {'data-component-type': 's-search-result'})
+            # On the /deals page, product containers might also be in different structures,
+            # e.g., 'div[data-card-type="deal"]' or specific deal-grid classes.
+            # Inspect the actual deals page (e.g., https://www.amazon.co.uk/deals?pct-off=70-)
+            # to confirm the correct product container selector. If 's-search-result' doesn't work,
+            # look for a different overarching div/article for each deal item.
+            # For the deals page, often deals are within structures like:
+            # <div data-deal-id="..." class="deal-card-container"> or similar.
+            # If the above 's-search-result' doesn't yield results, you'll need to adapt.
 
             if not products:
-                print("No more products found on this page or end of results for this query.")
+                print("No more products found on this page or end of results.")
                 break # Exit loop if no products are found
 
             for product in products:
                 # Extract product title
-                title_tag = product.find('span', class_='a-size-medium a-color-base a-text-normal')
+                # Check for common title classes on deal pages.
+                title_tag = product.find('span', class_='a-size-medium a-color-base a-text-normal') # Search result titles
+                if not title_tag: # Fallback for deals page specific titles
+                    title_tag = product.find('div', class_='a-section a-spacing-small a-text-left deal-title-and-discount')
+                    if title_tag:
+                        title_tag = title_tag.find('span') # Look for the actual title text within this div
                 title = title_tag.text.strip() if title_tag else "N/A"
 
                 # Extract product link
                 link_tag = product.find('a', class_='a-link-normal s-underline-text s-underline-link-text s-link-style a-text-normal')
+                if not link_tag: # Fallback for deals page specific links
+                    link_tag = product.find('a', class_='a-link-normal deal-card-link') # Common on deals page
                 link = "https://www.amazon.co.uk" + link_tag['href'] if link_tag and 'href' in link_tag.attrs else "N/A"
                 
                 # Extract price. Amazon prices can be split (whole/fraction) or in a hidden span.
@@ -104,19 +120,26 @@ def get_amazon_deals(search_query, min_discount=70, max_pages=3):
                     hidden_price_tag = product.find('span', class_='a-offscreen')
                     if hidden_price_tag:
                         price_text = hidden_price_tag.text.strip()
-
-                # Discount information: Primarily filtered by URL, but sometimes visible.
+                
+                # Discount information: Primarily filtered by URL.
                 discount_text = "N/A (filtered by URL)"
                 # Look for explicit discount percentage if present on the page (e.g., "70% off")
                 # This often appears in a badge or specific text. Inspect carefully!
-                discount_span = product.find('span', class_='a-badge-text') # Common class for badges
+                discount_span = product.find('span', class_='a-badge-text') # Common class for badges on search results
                 if discount_span and "% off" in discount_span.text:
                     discount_text = discount_span.text.strip()
-                elif product.find('span', class_='s-label-popover-default'): # Another common pattern
+                elif product.find('div', class_='deal-savings-and-price'): # Common on deals page
+                    discount_span_deal_page = product.find('span', class_='a-color-price') # Often contains e.g., "-70%"
+                    if discount_span_deal_page and "%" in discount_span_deal_page.text:
+                        discount_text = discount_span_deal_page.text.strip()
+                elif product.find('span', class_='s-label-popover-default'): # Another common pattern on search results
                      discount_text = product.find('span', class_='s-label-popover-default').text.strip()
+
 
                 # Optional: Scrape image URL for Discord embed thumbnail
                 image_tag = product.find('img', class_='s-image')
+                if not image_tag: # Fallback for deals page specific images
+                    image_tag = product.find('img', class_='_fluid_ext_grid_image_view_image__image__3qN_4') # Example for deal grid images
                 image_url = image_tag['src'] if image_tag and 'src' in image_tag.attrs else ""
 
                 # Only add if we have basic valid info
@@ -133,6 +156,13 @@ def get_amazon_deals(search_query, min_discount=70, max_pages=3):
 
             # Find the "Next Page" button/link to continue pagination
             next_page_link = soup.find('a', class_='s-pagination-next') # This class is common, but check it!
+            # On the /deals page, pagination might also be different.
+            # Look for elements like <a class="a-last" href="...">Next</a> or similar.
+            if not next_page_link:
+                next_page_link = soup.find('li', class_='a-last') # Sometimes the 'Next' button is in an <li>
+                if next_page_link:
+                    next_page_link = next_page_link.find('a') # Get the <a> tag inside the <li>
+
             if next_page_link and 'href' in next_page_link.attrs:
                 # Amazon's 'next' link is usually a relative URL, so append it to the base.
                 current_url = "https://www.amazon.co.uk" + next_page_link['href']
@@ -165,16 +195,14 @@ def get_amazon_deals(search_query, min_discount=70, max_pages=3):
     return deals_found
 
 if __name__ == "__main__":
-    # The search term can be set via an environment variable on Railway.
-    # Defaults to 'electronics' if not set.
-    search_term = os.environ.get("SEARCH_TERM", "electronics")
     
-    print(f"Starting Amazon UK 70% off deal scraper for '{search_term}'...")
+    print("Starting Amazon UK 70% off general deal scraper...")
+    # No search_term needed, as we're hitting the general deals page.
     # Limiting to 3 pages for a balance between speed and coverage for automated runs.
-    found_deals = get_amazon_deals(search_term, min_discount=70, max_pages=3)
+    found_deals = get_amazon_deals(min_discount=70, max_pages=3)
 
     if not found_deals:
-        print(f"No new deals found for '{search_term}' with at least 70% off in this run.")
+        print("No new general deals found with at least 70% off in this run.")
     else:
-        print(f"\nScraping complete. Found and attempted to send {len(found_deals)} deals for '{search_term}'.")
+        print(f"\nScraping complete. Found and attempted to send {len(found_deals)} general deals.")
 
